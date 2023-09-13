@@ -11,8 +11,11 @@ const mongoose = require('mongoose');
 const Dean = require('./schemas/deanSchema');
 const Session = require('./schemas/sessionSchema');
 const Student = require('./schemas/studentSchema');
+const generateDeanSchedule = require('./generateDeanSchedule');
+const checkStudent = require('./middlewares/checkStudent');
 
 const dotenv = require('dotenv');
+const checkDean = require('./middlewares/checkDean');
 dotenv.config();
 
 async function connectToDatabase() {
@@ -22,7 +25,6 @@ async function connectToDatabase() {
             useUnifiedTopology: true,
         });
         console.log('Connected to MongoDB successfully');
-        // Perform database operations here
     } catch (error) {
         console.error('Error connecting to MongoDB:', error);
     }
@@ -30,20 +32,31 @@ async function connectToDatabase() {
 
 connectToDatabase();
 
-// EXPRESS SPECIFIC STUFF
 app.use(bodyParser.json());
-app.use('/static', express.static('static')) // For serving static files
+app.use('/static', express.static('static')) 
 app.use(bodyParser.urlencoded({ extended: true }));
+
 // ENDPOINTS
 
 // Registration route
-app.post('/dean/register', async (req, res) => {
-    const { name, password, universityId } = req.body;
-    console.log(req.body)
+app.post('/:person/register', async (req, res) => {
+    const person = req.params.person;
+    const { username, password, universityId } = req.body;
+    console.log(req.body);
     const hashedPassword = await bcrypt.hash(password, saltRounds);
-    const newUser = new Dean({ name, password: hashedPassword, universityId });
+    let newUser;
+    if (person === 'dean') {
+        newUser = new Dean({ username, password: hashedPassword, universityId });
+    }
+    else if (person === 'student') {
+        newUser = new Student({ username, password: hashedPassword, universityId });
+    }
+    else {
+        return res.send("Invalid URL");
+    }
     try {
-        await newUser.save();
+        const user = await newUser.save();
+        console.log(user);
         res.status(201).json({ message: 'User registered successfully. Now Login' });
     } catch (error) {
         console.log(error)
@@ -51,34 +64,80 @@ app.post('/dean/register', async (req, res) => {
     }
 });
 
-// Example route for user login
-app.post('/dean/login', (req, res) => {
-    // Replace this with your actual user authentication logic
-    // const user = { name: "dean", password: "dean123" };
-    // const { name,universityId, password } = req.body;
-    const user = req.body;
-    const token = jwt.sign(user, process.env.JWT_SECRET);
+// Login Route
+app.post('/:person/login', async (req, res) => {
+    const person = req.params.person;
+
+    let user;
+    if (person === "dean") {
+        user = await Dean.findOne({ username: req.body.username });
+    }
+    else if (person === "student") {
+        user = await Student.findOne({ username: req.body.username });
+    }
+    else {
+        return res.status(404).send({error:"Invalid Url"});
+    }
+    if (!user) {
+        return res.json({msg:"User not found"});
+    }
+    
+    const passwordMatch = await bcrypt.compare(req.body.password, user.password);
+    if(!passwordMatch){
+        return res.json({error:"Incorrect Password"})
+    }
+
+    const userId = user._id;
+    const token = jwt.sign({ ...req.body, person, userId }, process.env.JWT_SECRET);
     res.json({ token });
 });
 
-app.get('/sessions', validateToken, (req,res)=>{
-    Session.find({}).then((sessions)=>{
-        res.send(sessions);
+
+app.get('/dean/pendingsessions', validateToken, checkDean, (req, res) => {
+    const deanId = req.user.userId;
+    Session.find({ deanId, bookedStudent: !null }).then((sessions) => {
+        res.json(sessions);
     })
 });
 
-app.post('/book_session/:sid/:studentId', validateToken, (req,res)=>{
-    const sid = req.params.sid;
-    const studentId = req.params.studentId;
-    Session.findById(sid).then((session)=>{
-        if(session.bookedStudent !== null){
-            res.send("Student already booked");
-        }else{
-            session.bookedStudent = studentId;
-            session.save();
-            res.send("Booked successfully");
+app.get('/sessions/:deanId', validateToken, async (req, res) => {
+    const deanId = req.params.deanId;
+    await Session.find({ deanId, bookedStudent: null }).then(async (sessions) => {
+        if (sessions.length == 0) {
+            const schedules = generateDeanSchedule(deanId);
+            console.log(schedules);
+            await Session.insertMany(schedules)
+                .then(() => {
+                    console.log('Dean\'s schedule inserted successfully.');
+                })
+                .catch(error => {
+                    console.error('Error inserting dean\'s schedule:', error);
+                });
+            return res.json(schedules);
+        }
+        else {
+            return res.json(sessions);
         }
     })
+});
+
+
+app.post('/book_session', validateToken, checkStudent, (req, res) => {
+    console.log("dsfas")
+    const { sessionId, studentId } = req.body;
+    console.log(sessionId, studentId);
+    Session.findById(sessionId).then((session) => {
+        console.log(session);
+        if (session.bookedStudent !== null) {
+            res.json({msg:"Slot already booked"});
+        } else {
+            session.bookedStudent = studentId;
+            session.save();
+            res.json({msg:"Booked successfully"});
+        }
+    }).catch((err) => {
+        console.log(err);
+    });
 });
 
 

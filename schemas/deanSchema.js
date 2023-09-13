@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const deanSchema = new mongoose.Schema({
-    name: String,
+    username: String,
     universityId: String,
     password: String
 });
